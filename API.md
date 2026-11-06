@@ -34,8 +34,9 @@ Cookies don't authenticate the API, and API keys don't work for the web app's ow
 
 ## Limits
 
-- **120 requests per minute** per key. Over that, the API answers `429` with a `Retry-After`
-  header (seconds).
+- **60 requests per minute** per user, across all their keys. Over that, the API answers `429`
+  with a `Retry-After` header (seconds). Poll every minute or so rather than continuously: each
+  request uses some of the free plan's daily database budget.
 - Sent mail counts against your sending providers' daily and monthly limits, exactly like mail
   sent from the web app, and falls back between providers the same way.
 - Cloudflare's free plan allows 100,000 Worker requests a day for the whole instance.
@@ -218,7 +219,8 @@ message and here. There is no per-message choice. The sent copy gets a 1×1 imag
 and its `http(s)` links point to `https://<your OpenInbox address>/api/t/...`, which records the
 click and redirects. The copy stored in your Sent mail is the original. A plain-text message gets
 an HTML part, since tracking needs one. System mail (auto-replies, unsubscribe requests) is not
-tracked.
+tracked, and neither are links in quoted or forwarded mail: those were written by someone else, and
+redirecting them through your address would let an outsider borrow it.
 
 Opens and clicks are noisy, so every hit gets a `source`:
 
@@ -240,12 +242,14 @@ The summary counts people and machines apart:
 ```
 
 Each event has `kind` (`open` or `click`), `source`, `url` (for clicks), `ip`, `userAgent`,
-`country` and `at`. A message keeps at most 300 events.
+`country` and `at`. A message records at most 300 events (links keep redirecting after that), and
+events are deleted after 180 days.
 
 Keep in mind:
 
-- Tracking is a guess, not proof: images may be blocked (no open recorded) and a forwarded
-  message reports its new reader's opens.
+- Tracking is a guess, not proof: images may be blocked (no open recorded), a forwarded
+  message reports its new reader's opens, and a message to several people counts all of them
+  together.
 - Tracking pixels and redirected links make spam filters more suspicious, especially for cold
   mail from a new domain. Replies are the more reliable signal.
 - Some laws (for example GDPR and ePrivacy in the EU) require consent for tracking pixels.

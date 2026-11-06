@@ -29,15 +29,32 @@ function webUrl(href: string): string | null {
   }
 }
 
+// Composer markers of earlier mail included in a message (see quoteHtml and forwardHtml).
+const FORWARD_MARK = '---------- Forwarded message ----------';
+
 // Adds the pixel and sends http(s) links through the redirect. Returns the links' URLs by index;
-// the same URL twice shares an index. Links that aren't valid URLs are left alone.
+// the same URL twice shares an index. Links that aren't valid URLs are left alone, and so are
+// links in quoted or forwarded mail: those were written by someone else, and tracking them would
+// turn an outsider's link into a redirect on this instance's own address.
 export async function applyTracking(html: string, opts: { base: string; token: string }): Promise<{ html: string; links: string[] }> {
   const links: string[] = [];
   const pixel = `<img src="${escapeHtml(pixelUrl(opts.base, opts.token))}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0">`;
   let placed = false;
+  let quoteDepth = 0;
+  let forwarded = false;
+  let text = '';
   const rewriter = new HTMLRewriter()
+    .on('blockquote', {
+      element(el) {
+        quoteDepth++;
+        el.onEndTag(() => {
+          quoteDepth--;
+        });
+      },
+    })
     .on('a[href]', {
       element(el) {
+        if (quoteDepth > 0 || forwarded) return;
         const url = webUrl(el.getAttribute('href') ?? '');
         if (!url) return;
         let i = links.indexOf(url);
@@ -54,6 +71,12 @@ export async function applyTracking(html: string, opts: { base: string; token: s
       },
     })
     .onDocument({
+      text(t) {
+        // Text arrives in chunks: keep a short tail so a marker split across chunks is found.
+        if (forwarded) return;
+        text = (text + t.text).slice(-2 * FORWARD_MARK.length);
+        if (text.includes(FORWARD_MARK)) forwarded = true;
+      },
       end(end) {
         if (!placed) end.append(pixel, { html: true });
       },

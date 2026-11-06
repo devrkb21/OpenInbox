@@ -17,6 +17,7 @@ interface TrackedRow {
   token: string;
   links: string;
   sent_at: number | null;
+  events: number;
 }
 
 // The HTML to send with the pixel and redirected links, or null without an app URL to point them
@@ -40,20 +41,21 @@ export interface Hit {
   org: string;
 }
 
-// Records an open or click; returns the link's URL for a click (null when unknown).
+// Records an open or click; returns the link's URL for a click (null when unknown). The URLs are
+// public, so a hit costs one indexed row read, plus two writes until the message's cap is reached.
 export async function recordHit(db: D1Database, token: string, kind: 'open' | 'click', link: number | null, hit: Hit): Promise<string | null> {
   const t = await first<TrackedRow>(db, 'SELECT * FROM tracked_messages WHERE token = ?', token);
   if (!t) return null;
   const url = kind === 'click' ? (parseJson<string[]>(t.links, [])[link ?? -1] ?? null) : null;
   if (kind === 'click' && !url) return null;
+  if (t.events >= MAX_EVENTS) return url;
+  const claimed = await db.prepare('UPDATE tracked_messages SET events = events + 1 WHERE message_id = ? AND events < ?').bind(t.message_id, MAX_EVENTS).run();
+  if (!claimed.meta.changes) return url;
   const now = Date.now();
   const source: HitSource = classifyHit({ kind, method: hit.method, userAgent: hit.userAgent, org: hit.org, msSinceSent: t.sent_at ? now - t.sent_at : null });
   await db
-    .prepare(
-      `INSERT INTO tracking_events (id, message_id, kind, link, source, ip, user_agent, country, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM tracking_events WHERE message_id = ?) < ?`,
-    )
-    .bind(newId(), t.message_id, kind, link, source, hit.ip, hit.userAgent.slice(0, 300), hit.country, now, t.message_id, MAX_EVENTS)
+    .prepare('INSERT INTO tracking_events (id, message_id, kind, link, source, ip, user_agent, country, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(newId(), t.message_id, kind, link, source, hit.ip, hit.userAgent.slice(0, 300), hit.country, now)
     .run();
   return url;
 }

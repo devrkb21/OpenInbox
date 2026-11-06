@@ -10,7 +10,7 @@ import { randomToken, sha256Hex } from '../lib/crypto';
 import { forbidden, HttpError, notFound } from '../lib/errors';
 import { MINUTE } from '../lib/time';
 import { accessibleMailboxes, type MailboxAccess } from './access';
-import { API_PER_KEY, countUse } from './rate-limit';
+import { API_PER_USER, countUse } from './rate-limit';
 import { clientIp } from './middleware';
 
 export async function newApiKey(): Promise<{ key: string; prefix: string; hash: string }> {
@@ -49,9 +49,9 @@ export const apiKeyAuth: MiddlewareHandler<AppBindings> = async (c, next) => {
   if (!row || row.status !== 'active' || (row.expires_at !== null && row.expires_at <= now)) {
     throw new HttpError(401, 'invalid_api_key', 'This API key is not valid. It may have been deleted or expired, or its user disabled.');
   }
-  const use = await countUse(db, `api:key:${row.id}`, API_PER_KEY);
-  if (use.count > API_PER_KEY.max) {
-    throw new HttpError(429, 'rate_limited', `Too many requests: this key may make ${API_PER_KEY.max} per minute.`, { retryAfter: use.retryAfter });
+  const wait = await countUse(db, `api:user:${row.user_id}`, API_PER_USER);
+  if (wait !== null) {
+    throw new HttpError(429, 'rate_limited', `Too many requests: your API keys may make ${API_PER_USER.max} per minute together.`, { retryAfter: wait });
   }
   // Written at most once a minute, like session activity.
   if (!row.last_used_at || now - row.last_used_at > MINUTE) {

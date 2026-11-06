@@ -9,7 +9,9 @@ export interface Limit {
 export const LOGIN_PER_IP: Limit = { max: 20, windowMs: 15 * 60_000 };
 export const LOGIN_PER_ACCOUNT: Limit = { max: 6, windowMs: 15 * 60_000 };
 export const KEY_CHECK_PER_IP: Limit = { max: 6, windowMs: 15 * 60_000 };
-export const API_PER_KEY: Limit = { max: 120, windowMs: 60_000 };
+// Per user across all their API keys. Each allowed request costs one D1 write, so this also keeps
+// one busy client inside the free plan's daily write budget.
+export const API_PER_USER: Limit = { max: 60, windowMs: 60_000 };
 
 export const clientIpKey = (scope: string, ip: string) => `${scope}:ip:${ip}`;
 export const accountKey = (scope: string, email: string) => `${scope}:user:${email.toLowerCase()}`;
@@ -45,18 +47,15 @@ export async function clearFailures(db: D1Database, key: string): Promise<void> 
   await db.prepare('DELETE FROM auth_attempts WHERE key = ?').bind(key).run();
 }
 
-// Counts one use and returns the count in the current window, in one write.
-export async function countUse(db: D1Database, key: string, limit: Limit): Promise<{ count: number; retryAfter: number }> {
+// Counts one use, or returns the seconds to wait when the window is full. A refused use is a read
+// only, so hammering past the limit doesn't spend writes.
+export async function countUse(db: D1Database, key: string, limit: Limit): Promise<number | null> {
   const now = Date.now();
-  const row = await db
-    .prepare(
-      `INSERT INTO auth_attempts (key, count, window_start) VALUES (?, 1, ?)
-       ON CONFLICT (key) DO UPDATE SET
-         count = CASE WHEN ? - window_start >= ? THEN 1 ELSE count + 1 END,
-         window_start = CASE WHEN ? - window_start >= ? THEN ? ELSE window_start END
-       RETURNING count, window_start`,
-    )
-    .bind(key, now, now, limit.windowMs, now, limit.windowMs, now)
-    .first<Row>();
-  return { count: row?.count ?? 1, retryAfter: Math.max(1, Math.ceil(((row?.window_start ?? now) + limit.windowMs - now) / 1000)) };
+  const current = await db.prepare('SELECT count, window_start FROM auth_attempts WHERE key = ?').bind(key).first<Row>();
+  if (current && now - current.window_start < limit.windowMs && current.count >= limit.max) {
+    return Math.max(1, Math.ceil((current.window_start + limit.windowMs - now) / 1000));
+  }
+  // The same fixed-window counter as failed sign-ins.
+  await recordFailure(db, key, limit);
+  return null;
 }

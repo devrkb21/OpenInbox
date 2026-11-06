@@ -4,7 +4,8 @@ CREATE TABLE tracked_messages (
   message_id INTEGER PRIMARY KEY REFERENCES messages (id) ON DELETE CASCADE,
   token TEXT NOT NULL UNIQUE,       -- random, in the pixel and link URLs
   links TEXT NOT NULL DEFAULT '[]', -- JSON array of the original URLs, by index, set when sent
-  sent_at INTEGER                   -- when the tracked copy went out, to spot instant scanner hits
+  sent_at INTEGER,                  -- when the tracked copy went out, to spot instant scanner hits
+  events INTEGER NOT NULL DEFAULT 0 -- events recorded, up to a cap, so a hit never counts rows
 );
 
 -- source: human (a person, as far as we can tell), proxy (a mail provider's image proxy fetching

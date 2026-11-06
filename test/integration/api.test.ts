@@ -107,12 +107,29 @@ describe('Inbox API', () => {
     expect((await call(expired.key, 'GET', '/api/v1/me')).status).toBe(401);
   });
 
-  it('rate limits each key', async () => {
-    const { key } = await newKey(['read']);
-    for (let i = 0; i < 120; i++) expect((await call(key, 'GET', '/api/v1/me')).status).toBe(200);
-    const limited = await call(key, 'GET', '/api/v1/me');
+  it('rate limits each user across their keys, without writes once limited', async () => {
+    const a = await newKey(['read']);
+    const b = await newKey(['read']);
+    for (let i = 0; i < 60; i++) expect((await call(i % 2 ? a.key : b.key, 'GET', '/api/v1/me')).status).toBe(200);
+    const limited = await call(b.key, 'GET', '/api/v1/me');
     expect(limited.status).toBe(429);
     expect(limited.body.error.code).toBe('rate_limited');
+    const counter = () => env.DB.prepare("SELECT count FROM auth_attempts WHERE key LIKE 'api:user:%'").first<{ count: number }>();
+    expect((await counter())!.count).toBe(60);
+    await call(a.key, 'GET', '/api/v1/me');
+    expect((await counter())!.count).toBe(60);
+  });
+
+  it('finishes a send that stopped before it was queued when the request is retried', async () => {
+    const { key } = await newKey(['send']);
+    const msg = { from: 'admin@example.com', to: ['lead@dest.test'], subject: 'Retry me', text: 'Hi' };
+    const first = await call(key, 'POST', '/api/v1/messages', msg, { 'Idempotency-Key': 'k1' });
+    // As if the first request had stopped right after saving: back to a draft, nothing sent.
+    await env.DB.prepare("UPDATE messages SET status = 'draft' WHERE id = ?").bind(first.body.id).run();
+    fake.reset();
+    const again = await call(key, 'POST', '/api/v1/messages', msg, { 'Idempotency-Key': 'k1' });
+    expect(again.body).toMatchObject({ id: first.body.id, status: 'sent', replayed: true });
+    expect(fake.state.resend.emails).toHaveLength(1);
   });
 
   it('refuses attachments when attachment storage is off', async () => {
@@ -162,6 +179,11 @@ describe('Inbox API', () => {
     expect(click.headers.get('location')).toBe('https://site.test/p?a=1&b=2');
     expect((await get(`/api/t/${token}/5`, chrome)).status).toBe(404);
     expect((await get('/api/t/unknownunknownunknown.gif', chrome)).status).toBe(200);
+    // A capped message stops recording but still redirects.
+    await env.DB.prepare('UPDATE tracked_messages SET events = 300').run();
+    expect((await get(`/api/t/${token}/0`, chrome)).status).toBe(302);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM tracking_events').first<{ n: number }>())!.n).toBe(4);
+    await env.DB.prepare('UPDATE tracked_messages SET events = 4').run();
 
     const { summary, events } = (await call(key, 'GET', `/api/v1/messages/${sent.body.id}/events`)).body;
     expect(summary).toMatchObject({ opened: 1, machineOpens: 1, clicked: 1, machineClicks: 1, links: [{ url: 'https://site.test/p?a=1&b=2', clicks: 1 }] });

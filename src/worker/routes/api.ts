@@ -3,7 +3,8 @@
 // API.md.
 import { Hono } from 'hono';
 import { Buffer } from 'node:buffer';
-import type { AppBindings } from '../types';
+import type { AppBindings, SessionUser } from '../types';
+import type { Env } from '../env';
 import { body, intParam } from '../lib/validate';
 import { apiSendSchema, apiThreadActionSchema } from '../../shared/schemas';
 import { FOLDERS, type Folder } from '../../shared/constants';
@@ -153,11 +154,10 @@ api.get('/messages', requireScope('read'), async (c) => {
             g.sent_at, g.created_at, g.is_read, g.has_attachments
        FROM messages g JOIN threads t ON t.id = g.thread_id
       WHERE g.mailbox_id IN (${placeholders(mailboxIds.length)}) AND g.status NOT IN ('draft', 'unparsed')
-        AND (g.created_at > ? OR (g.created_at = ? AND g.id > ?))
+        AND (g.created_at, g.id) > (?, ?)
         ${direction ? 'AND g.direction = ?' : ''} ${folder ? 'AND t.folder = ?' : ''}
       ORDER BY g.created_at, g.id LIMIT ?`,
     ...mailboxIds,
-    t,
     t,
     id,
     ...(direction ? [direction] : []),
@@ -244,9 +244,10 @@ api.post('/messages', requireScope('send'), async (c) => {
   const input = await body(c, apiSendSchema);
   const idemKey = c.req.header('idempotency-key')?.trim() || null;
   if (idemKey && idemKey.length > 200) throw badRequest('Idempotency-Key can be at most 200 characters.');
+  const sendAt = typeof input.sendAt === 'string' ? Date.parse(input.sendAt) : (input.sendAt ?? null);
   if (idemKey) {
     const done = await first<{ message_id: number }>(db, 'SELECT message_id FROM api_idempotency WHERE key_id = ? AND idem_key = ?', key.id, idemKey);
-    if (done) return c.json(await sendResult(db, done.message_id, true));
+    if (done) return c.json(await replay(c.env, user, done.message_id, sendAt));
   }
 
   const from = await first<{ mailbox_id: number }>(db, 'SELECT mailbox_id FROM addresses WHERE address = ?', normalizeAddress(input.from));
@@ -257,8 +258,6 @@ api.post('/messages', requireScope('send'), async (c) => {
     const parent = await first<{ mailbox_id: number }>(db, 'SELECT mailbox_id FROM messages WHERE id = ?', input.inReplyTo);
     if (!parent || parent.mailbox_id !== from.mailbox_id) throw badRequest('inReplyTo must be a message in the same mailbox as from.');
   }
-  const sendAt = typeof input.sendAt === 'string' ? Date.parse(input.sendAt) : (input.sendAt ?? null);
-
   // Attachments go through the same R2 uploads as the web composer.
   const uploadIds: string[] = [];
   if (input.attachments.length) {
@@ -306,12 +305,21 @@ api.post('/messages', requireScope('send'), async (c) => {
     if (!claimed.meta.changes) {
       await deleteDraft(c.env, user, draft.id);
       const winner = await first<{ message_id: number }>(db, 'SELECT message_id FROM api_idempotency WHERE key_id = ? AND idem_key = ?', key.id, idemKey);
-      return c.json(await sendResult(db, winner!.message_id, true));
+      return c.json(await replay(c.env, user, winner!.message_id, sendAt));
     }
   }
   await sendDraft(c.env, user, draft.id, sendAt);
   return c.json(await sendResult(db, draft.id, false), 201);
 });
+
+// The first request with this Idempotency-Key may have stopped between saving the message and
+// queueing it (an error, or the Worker stopping). Then the message is still a draft: queue it now.
+// deliver() claims a message atomically, so racing replays still send it once.
+async function replay(env: Env, user: SessionUser, id: number, sendAt: number | null) {
+  const m = await first<{ status: string }>(env.DB, 'SELECT status FROM messages WHERE id = ?', id);
+  if (m?.status === 'draft') await sendDraft(env, user, id, sendAt);
+  return sendResult(env.DB, id, true);
+}
 
 async function sendResult(db: D1Database, id: number, replayed: boolean) {
   const m = await first<{ thread_id: number; status: string; message_id: string | null; error: string | null; send_at: number | null }>(

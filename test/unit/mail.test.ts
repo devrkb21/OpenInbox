@@ -153,6 +153,15 @@ describe('tracking', () => {
     expect(html).toContain('href="https://exa mple.com/"');
   });
 
+  it("leaves links in quoted and forwarded mail alone", async () => {
+    const { html, links } = await applyTracking(
+      '<p><a href="https://mine.test/">mine</a></p><p>On Mon, Ann wrote:</p><blockquote><p><a href="https://phish.test/">theirs</a></p><blockquote><a href="https://deep.test/">x</a></blockquote><a href="https://phish2.test/">y</a></blockquote><p><a href="https://mine2.test/">after</a></p><p>---------- Forwarded message ----------<br>From: Bob</p><a href="https://fwd.test/">fwd</a>',
+      { base: 'https://m.test', token: 't' },
+    );
+    expect(links).toEqual(['https://mine.test/', 'https://mine2.test/']);
+    for (const kept of ['https://phish.test/', 'https://deep.test/', 'https://phish2.test/', 'https://fwd.test/']) expect(html).toContain(`href="${kept}"`);
+  });
+
   it('appends the pixel to a fragment without a body', async () => {
     const { html } = await applyTracking('<p>Hi</p>', { base: 'https://m.test', token: 't' });
     expect(html).toMatch(/^<p>Hi<\/p><img src="https:\/\/m\.test\/api\/t\/t\.gif"/);
