@@ -134,37 +134,44 @@ interface MessageListRow {
   created_at: number;
   is_read: number;
   has_attachments: number;
+  seq: number;
 }
 
-// Messages in arrival order, for polling: pass the previous response's nextCursor (or a
-// millisecond timestamp as ?since=) to get only what arrived after it.
+// Messages in the order they became visible (received, or sent), for polling: pass the previous
+// response's nextCursor to get only what came after it. The cursor is the message sequence number
+// (see migration 0005), which follows commit order, so overlapping deliveries can't be skipped.
 api.get('/messages', requireScope('read'), async (c) => {
+  const db = c.env.DB;
   const mailboxIds = await mailboxScope(c, c.req.query('mailbox'));
   const direction = c.req.query('direction');
   if (direction && direction !== 'in' && direction !== 'out') throw badRequest('direction must be in or out.');
   const folder = c.req.query('folder');
   if (folder && !['inbox', 'archive', 'spam', 'trash'].includes(folder)) throw badRequest('folder must be inbox, archive, spam or trash.');
   const limit = limitParam(c.req.query('limit'));
-  const [t, id] = (c.req.query('cursor') ?? `${Number(c.req.query('since') ?? 0)}.0`).split('.').map(Number);
-  if (!Number.isFinite(t) || !Number.isFinite(id)) throw badRequest('Invalid cursor.');
-  if (!mailboxIds.length) return c.json({ messages: [], nextCursor: null });
+  let after = 0;
+  if (c.req.query('cursor') !== undefined) {
+    after = Number(c.req.query('cursor'));
+    if (!Number.isSafeInteger(after) || after < 0) throw badRequest('Invalid cursor: pass nextCursor from the previous response.');
+  } else if (c.req.query('since') !== undefined) {
+    const since = Number(c.req.query('since'));
+    if (!Number.isFinite(since)) throw badRequest('since must be milliseconds since the epoch.');
+    after = await seqBefore(db, mailboxIds, since);
+  }
+  if (!mailboxIds.length) return c.json({ messages: [], nextCursor: String(after) });
   const rows = await all<MessageListRow>(
-    c.env.DB,
+    db,
     `SELECT g.id, g.thread_id, g.mailbox_id, t.folder, g.direction, g.status, g.message_id, g.from_addr, g.from_name, g.to_addrs, g.cc_addrs, g.subject, g.snippet,
-            g.sent_at, g.created_at, g.is_read, g.has_attachments
+            g.sent_at, g.created_at, g.is_read, g.has_attachments, g.seq
        FROM messages g JOIN threads t ON t.id = g.thread_id
-      WHERE g.mailbox_id IN (${placeholders(mailboxIds.length)}) AND g.status NOT IN ('draft', 'unparsed')
-        AND (g.created_at, g.id) > (?, ?)
+      WHERE g.mailbox_id IN (${placeholders(mailboxIds.length)}) AND g.seq > ?
         ${direction ? 'AND g.direction = ?' : ''} ${folder ? 'AND t.folder = ?' : ''}
-      ORDER BY g.created_at, g.id LIMIT ?`,
+      ORDER BY g.seq LIMIT ?`,
     ...mailboxIds,
-    t,
-    id,
+    after,
     ...(direction ? [direction] : []),
     ...(folder ? [folder] : []),
     limit,
   );
-  const last = rows.at(-1);
   return c.json({
     messages: rows.map((r) => ({
       id: r.id,
@@ -185,20 +192,36 @@ api.get('/messages', requireScope('read'), async (c) => {
       hasAttachments: !!r.has_attachments,
     })),
     // Always a cursor, so a poller can keep asking from where it stopped.
-    nextCursor: last ? `${last.created_at}.${last.id}` : `${t}.${id}`,
+    nextCursor: String(rows.at(-1)?.seq ?? after),
   });
 });
+
+// The sequence number just before the first message created at or after `since`; with none, the
+// latest number, so polling starts from now.
+async function seqBefore(db: D1Database, mailboxIds: number[], since: number): Promise<number> {
+  const first = mailboxIds.length
+    ? await db
+        .prepare(`SELECT MIN(seq) AS seq FROM messages WHERE mailbox_id IN (${placeholders(mailboxIds.length)}) AND created_at >= ? AND seq IS NOT NULL`)
+        .bind(...mailboxIds, since)
+        .first<{ seq: number | null }>()
+    : null;
+  if (first?.seq) return first.seq - 1;
+  return (await db.prepare("SELECT value FROM sequences WHERE name = 'messages'").first<{ value: number }>())?.value ?? 0;
+}
 
 api.get('/messages/:id', requireScope('read'), async (c) => {
   const m = await assertMessage(c.env.DB, currentUser(c), intParam(c, 'id'));
   assertKeyMailbox(c, m.mailboxId);
-  const { messages } = await getThread(c.env.DB, m.threadId);
-  const detail = messages.find((x) => x.id === m.messageId);
-  if (!detail) throw notFound('Message not found.');
+  const [{ thread, messages }, row] = await Promise.all([
+    getThread(c.env.DB, m.threadId, m.messageId),
+    first<{ created_at: number; has_attachments: number }>(c.env.DB, 'SELECT created_at, has_attachments FROM messages WHERE id = ?', m.messageId),
+  ]);
+  const detail = messages[0];
+  if (!detail || !row) throw notFound('Message not found.');
   // getThread leaves large HTML bodies for a second request; the API returns them whole.
   const html = detail.htmlDeferred ? (await messageBody(c.env.DB, m.messageId)).html : detail.html;
   const { htmlDeferred: _deferred, ...rest } = detail;
-  return c.json({ ...rest, html, threadId: m.threadId, mailboxId: m.mailboxId });
+  return c.json({ ...rest, html, threadId: m.threadId, mailboxId: m.mailboxId, folder: thread.folder, receivedAt: row.created_at, hasAttachments: !!row.has_attachments });
 });
 
 // Opens and clicks of a sent message, newest first.
@@ -247,7 +270,7 @@ api.post('/messages', requireScope('send'), async (c) => {
   const sendAt = typeof input.sendAt === 'string' ? Date.parse(input.sendAt) : (input.sendAt ?? null);
   if (idemKey) {
     const done = await first<{ message_id: number }>(db, 'SELECT message_id FROM api_idempotency WHERE key_id = ? AND idem_key = ?', key.id, idemKey);
-    if (done) return c.json(await replay(c.env, user, done.message_id, sendAt));
+    if (done) return c.json(await replay(c.env, user, key.id, idemKey));
   }
 
   const from = await first<{ mailbox_id: number }>(db, 'SELECT mailbox_id FROM addresses WHERE address = ?', normalizeAddress(input.from));
@@ -301,24 +324,48 @@ api.post('/messages', requireScope('send'), async (c) => {
   });
   if (idemKey) {
     // Two requests racing with the same key: the second gives up its draft and returns the first.
-    const claimed = await run(db, 'INSERT OR IGNORE INTO api_idempotency (key_id, idem_key, message_id, created_at) VALUES (?, ?, ?, ?)', key.id, idemKey, draft.id, Date.now());
+    const claimed = await run(
+      db,
+      'INSERT OR IGNORE INTO api_idempotency (key_id, idem_key, message_id, send_at, created_at) VALUES (?, ?, ?, ?, ?)',
+      key.id,
+      idemKey,
+      draft.id,
+      sendAt,
+      Date.now(),
+    );
     if (!claimed.meta.changes) {
       await deleteDraft(c.env, user, draft.id);
-      const winner = await first<{ message_id: number }>(db, 'SELECT message_id FROM api_idempotency WHERE key_id = ? AND idem_key = ?', key.id, idemKey);
-      return c.json(await replay(c.env, user, winner!.message_id, sendAt));
+      return c.json(await replay(c.env, user, key.id, idemKey));
     }
-  }
-  await sendDraft(c.env, user, draft.id, sendAt);
+    await queueOnce(c.env, user, key.id, idemKey);
+  } else await sendDraft(c.env, user, draft.id, sendAt);
   return c.json(await sendResult(db, draft.id, false), 201);
 });
 
-// The first request with this Idempotency-Key may have stopped between saving the message and
-// queueing it (an error, or the Worker stopping). Then the message is still a draft: queue it now.
-// deliver() claims a message atomically, so racing replays still send it once.
-async function replay(env: Env, user: SessionUser, id: number, sendAt: number | null) {
-  const m = await first<{ status: string }>(env.DB, 'SELECT status FROM messages WHERE id = ?', id);
-  if (m?.status === 'draft') await sendDraft(env, user, id, sendAt);
-  return sendResult(env.DB, id, true);
+// Hands an idempotent request's message to the send pipeline, once: whoever flips `queued` sends,
+// with the first request's sendAt. If that fails before the message is queued, the flag is cleared
+// so a retry can finish it.
+async function queueOnce(env: Env, user: SessionUser, keyId: number, idemKey: string): Promise<void> {
+  const row = await env.DB.prepare('UPDATE api_idempotency SET queued = 1 WHERE key_id = ? AND idem_key = ? AND queued = 0 RETURNING message_id, send_at')
+    .bind(keyId, idemKey)
+    .first<{ message_id: number; send_at: number | null }>();
+  if (!row) return;
+  try {
+    await sendDraft(env, user, row.message_id, row.send_at);
+  } catch (e) {
+    await env.DB.prepare('UPDATE api_idempotency SET queued = 0 WHERE key_id = ? AND idem_key = ?').bind(keyId, idemKey).run();
+    throw e;
+  }
+}
+
+// A retry with the same Idempotency-Key returns the first message. If the first request stopped
+// between saving the message and queueing it (an error, or the Worker stopping), the retry queues
+// it; a message that was queued and later cancelled back to drafts is left alone.
+async function replay(env: Env, user: SessionUser, keyId: number, idemKey: string) {
+  const row = await first<{ message_id: number }>(env.DB, 'SELECT message_id FROM api_idempotency WHERE key_id = ? AND idem_key = ?', keyId, idemKey);
+  if (!row) throw notFound('Message not found.');
+  await queueOnce(env, user, keyId, idemKey);
+  return sendResult(env.DB, row.message_id, true);
 }
 
 async function sendResult(db: D1Database, id: number, replayed: boolean) {

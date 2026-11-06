@@ -13,7 +13,7 @@ import { applyTracking, classifyHit, summarize, type EventCount, type HitSource,
 const MAX_EVENTS = 300;
 
 interface TrackedRow {
-  message_id: number;
+  message_id: number | null; // null once the message was deleted: links still redirect
   token: string;
   links: string;
   sent_at: number | null;
@@ -41,23 +41,26 @@ export interface Hit {
   org: string;
 }
 
-// Records an open or click; returns the link's URL for a click (null when unknown). The URLs are
-// public, so a hit costs one indexed row read, plus two writes until the message's cap is reached.
-export async function recordHit(db: D1Database, token: string, kind: 'open' | 'click', link: number | null, hit: Hit): Promise<string | null> {
+// Looks up a hit on a public tracking URL: null for an unknown token or link, else the link's URL
+// (for a click) and a function that records the event, to run after the response. A hit costs one
+// indexed row read, plus two writes until the message's cap is reached.
+export async function lookupHit(db: D1Database, token: string, kind: 'open' | 'click', link: number | null): Promise<{ url: string | null; record: (hit: Hit) => Promise<void> } | null> {
   const t = await first<TrackedRow>(db, 'SELECT * FROM tracked_messages WHERE token = ?', token);
   if (!t) return null;
   const url = kind === 'click' ? (parseJson<string[]>(t.links, [])[link ?? -1] ?? null) : null;
   if (kind === 'click' && !url) return null;
-  if (t.events >= MAX_EVENTS) return url;
-  const claimed = await db.prepare('UPDATE tracked_messages SET events = events + 1 WHERE message_id = ? AND events < ?').bind(t.message_id, MAX_EVENTS).run();
-  if (!claimed.meta.changes) return url;
   const now = Date.now();
-  const source: HitSource = classifyHit({ kind, method: hit.method, userAgent: hit.userAgent, org: hit.org, msSinceSent: t.sent_at ? now - t.sent_at : null });
-  await db
-    .prepare('INSERT INTO tracking_events (id, message_id, kind, link, source, ip, user_agent, country, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(newId(), t.message_id, kind, link, source, hit.ip, hit.userAgent.slice(0, 300), hit.country, now)
-    .run();
-  return url;
+  const record = async (hit: Hit) => {
+    if (t.message_id === null || t.events >= MAX_EVENTS) return;
+    const claimed = await db.prepare('UPDATE tracked_messages SET events = events + 1 WHERE token = ? AND events < ?').bind(token, MAX_EVENTS).run();
+    if (!claimed.meta.changes) return;
+    const source: HitSource = classifyHit({ kind, method: hit.method, userAgent: hit.userAgent, org: hit.org, msSinceSent: t.sent_at ? now - t.sent_at : null });
+    await db
+      .prepare('INSERT INTO tracking_events (id, message_id, kind, link, source, ip, user_agent, country, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(newId(), t.message_id, kind, link, source, hit.ip, hit.userAgent.slice(0, 300), hit.country, now)
+      .run();
+  };
+  return { url, record };
 }
 
 export async function trackingSummaries(db: D1Database, messageIds: number[]): Promise<Map<number, TrackingSummary>> {
@@ -72,6 +75,7 @@ export async function trackingSummaries(db: D1Database, messageIds: number[]): P
     ...tracked.map((t) => t.message_id),
   );
   for (const t of tracked) {
+    if (t.message_id === null) continue;
     out.set(t.message_id, summarize(parseJson<string[]>(t.links, []), counts.filter((c) => c.message_id === t.message_id)));
   }
   return out;

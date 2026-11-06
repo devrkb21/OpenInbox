@@ -124,12 +124,46 @@ describe('Inbox API', () => {
     const { key } = await newKey(['send']);
     const msg = { from: 'admin@example.com', to: ['lead@dest.test'], subject: 'Retry me', text: 'Hi' };
     const first = await call(key, 'POST', '/api/v1/messages', msg, { 'Idempotency-Key': 'k1' });
-    // As if the first request had stopped right after saving: back to a draft, nothing sent.
+    // As if the first request had stopped right after saving: a draft, never queued.
     await env.DB.prepare("UPDATE messages SET status = 'draft' WHERE id = ?").bind(first.body.id).run();
+    await env.DB.prepare('UPDATE api_idempotency SET queued = 0').run();
     fake.reset();
     const again = await call(key, 'POST', '/api/v1/messages', msg, { 'Idempotency-Key': 'k1' });
     expect(again.body).toMatchObject({ id: first.body.id, status: 'sent', replayed: true });
     expect(fake.state.resend.emails).toHaveLength(1);
+  });
+
+  it("doesn't send a cancelled scheduled message when the request is retried", async () => {
+    const { key } = await newKey(['send']);
+    const msg = { from: 'admin@example.com', to: ['lead@dest.test'], subject: 'Later', text: 'Hi', sendAt: Date.now() + 3_600_000 };
+    const first = await call(key, 'POST', '/api/v1/messages', msg, { 'Idempotency-Key': 'k2' });
+    expect(first.body.status).toBe('scheduled');
+    expect((await call(key, 'POST', `/api/v1/messages/${first.body.id}/cancel`)).status).toBe(200);
+    const again = await call(key, 'POST', '/api/v1/messages', { ...msg, sendAt: undefined }, { 'Idempotency-Key': 'k2' });
+    expect(again.body).toMatchObject({ id: first.body.id, status: 'draft', replayed: true });
+    expect(fake.state.resend.emails).toHaveLength(0);
+  });
+
+  it('polls in commit order, so out-of-order arrival times are not skipped, and lists sent drafts', async () => {
+    const { key } = await newKey(['read', 'send']);
+    const start = (await call(key, 'GET', `/api/v1/messages?since=${Date.now()}`)).body.nextCursor;
+    await deliver(email({ subject: 'B', messageId: 'b@dest.test' }), { from: 'ann@dest.test', to: 'admin@example.com' });
+    const firstPoll = await call(key, 'GET', `/api/v1/messages?cursor=${start}`);
+    expect(firstPoll.body.messages.map((m: { subject: string }) => m.subject)).toEqual(['B']);
+    // A delivery that started earlier but committed later: an older arrival time.
+    await deliver(email({ subject: 'A', messageId: 'a@dest.test' }), { from: 'ann@dest.test', to: 'admin@example.com' });
+    await env.DB.prepare("UPDATE messages SET created_at = created_at - 60000 WHERE subject = 'A'").run();
+    // A draft saved in the web app before the cursor, sent after it.
+    const boxes = await admin.get('/api/mailboxes');
+    const draft = await admin.post('/api/drafts', { mailboxId: boxes[0].id, from: 'admin@example.com', to: [{ name: '', address: 'x@dest.test' }], subject: 'Draft', html: '<p>Hi</p>' });
+    await env.DB.prepare('UPDATE messages SET created_at = 1 WHERE id = ?').bind(draft.id).run();
+    await admin.post(`/api/drafts/${draft.id}/send`, {});
+    const next = await call(key, 'GET', `/api/v1/messages?cursor=${firstPoll.body.nextCursor}`);
+    expect(next.body.messages.map((m: { subject: string }) => m.subject)).toEqual(['A', 'Draft']);
+    expect((await call(key, 'GET', `/api/v1/messages?cursor=${next.body.nextCursor}`)).body).toEqual({ messages: [], nextCursor: next.body.nextCursor });
+    const one = await call(key, 'GET', `/api/v1/messages/${next.body.messages[0].id}`);
+    expect(one.body).toMatchObject({ subject: 'A', folder: 'inbox', hasAttachments: false });
+    expect(one.body.receivedAt).toBeTypeOf('number');
   });
 
   it('refuses attachments when attachment storage is off', async () => {
@@ -192,7 +226,15 @@ describe('Inbox API', () => {
     const thread = await admin.get(`/api/threads/${sent.body.threadId}`);
     expect(thread.messages[0].html).toContain('https://site.test/p');
     expect(thread.messages[0].tracking).toMatchObject({ opened: 1, clicked: 1 });
+
+    // Links in delivered mail keep working after the sender deletes the message.
+    await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(sent.body.id).run();
+    const late = await get(`/api/t/${token}/0`, chrome);
+    expect(late.status).toBe(302);
+    expect(late.headers.get('location')).toBe('https://site.test/p?a=1&b=2');
+    expect((await env.DB.prepare('SELECT message_id FROM tracked_messages WHERE token = ?').bind(token).first<{ message_id: number | null }>())!.message_id).toBeNull();
   });
+
   it("doesn't track system mail such as auto-replies", async () => {
     await admin.patch('/api/admin/settings', { tracking: 'on' });
     const boxes = await admin.get('/api/mailboxes');

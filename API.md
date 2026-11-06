@@ -116,7 +116,8 @@ Answers `201`:
 { "id": 7212, "threadId": 7210, "status": "sent", "messageId": "...@example.com", "error": null, "retryAt": null, "sendAt": null, "replayed": false }
 ```
 
-`status` is `sent`, `scheduled` or `failed`. A failed send with `retryAt` set is retried
+`status` is `sent`, `scheduled` or `failed` (a replay can also show `sending` while the first
+request is still sending, or `draft` if the message was cancelled since). A failed send with `retryAt` set is retried
 automatically (up to 3 more times); without it, `error` explains why it can't be sent, e.g. a
 suppressed recipient. Delivery results arrive later: check `status` with `GET /messages/{id}`
 (`delivered`, `bounced`, `complained`) when your provider sends delivery webhooks.
@@ -131,16 +132,18 @@ Cancels a scheduled message. It goes back to your drafts.
 
 ### `GET /messages` · `read`
 
-Messages in the order they arrived, newest last. Made for polling: keep the `nextCursor` from each
-response and pass it next time to get only what is new.
+Messages in the order they became visible: received mail when it is stored, sent mail when it is
+sent (a scheduled message appears once it goes out), newest last. Made for polling: keep the
+`nextCursor` from each response and pass it next time to get only what is new. The order is the
+order the database stored them in, so messages that arrive at the same moment are never skipped.
 
 | Query | |
 | --- | --- |
 | `mailbox` | A mailbox ID, or `all` (default) |
 | `direction` | `in` (received) or `out` (sent) |
 | `folder` | `inbox`, `archive`, `spam` or `trash` |
-| `since` | Milliseconds since the epoch, for the first request |
-| `cursor` | `nextCursor` from the previous response |
+| `cursor` | `nextCursor` from the previous response. Treat it as an opaque string. |
+| `since` | Instead of `cursor`, on the first request: start with messages from this time (milliseconds since the epoch). `since=<now>` returns nothing yet and a cursor to poll from. Without either, polling starts at the oldest message. |
 | `limit` | 1–100, default 50 |
 
 ```json
@@ -151,12 +154,13 @@ response and pass it next time to get only what is new.
     "to": [{ "name": "", "address": "billing@example.com" }], "cc": [], "subject": "Re: Invoice 1042",
     "snippet": "Thanks, paid today.", "sentAt": 1762412400000, "receivedAt": 1762412403120, "isRead": false, "hasAttachments": false
   }],
-  "nextCursor": "1762412403120.7215"
+  "nextCursor": "48211"
 }
 ```
 
 `nextCursor` is always present, also when nothing new arrived, so a poller can store it and ask
-again later.
+again later. A message moved to another folder after it was listed isn't listed again, and
+`status` and `folder` are as they were when listed: read the message for its current state.
 
 ### `GET /messages/{id}` · `read`
 
@@ -191,8 +195,8 @@ Conversations in a view, newest first.
 
 ### `GET /threads/{id}` · `read`
 
-A conversation and all its messages, as in `GET /messages/{id}`. Very large HTML bodies may be
-`null` with `htmlDeferred: true`; fetch those with `GET /messages/{id}`.
+A conversation and its messages (up to 300), as in `GET /messages/{id}`. Very large HTML bodies
+may be `null` with `htmlDeferred: true`; fetch those with `GET /messages/{id}`.
 
 ### `GET /search` · `read`
 
@@ -217,7 +221,9 @@ tracking**. It is off by default. While it is on, every message people send, fro
 the API, is tracked: you see when it is opened and its links clicked, in the web app under the
 message and here. There is no per-message choice. The sent copy gets a 1×1 image
 and its `http(s)` links point to `https://<your OpenInbox address>/api/t/...`, which records the
-click and redirects. The copy stored in your Sent mail is the original. A plain-text message gets
+click and redirects. The copy shown in your Sent mail is the original; the downloadable .eml is the
+copy that was sent, so opening it in a mail app may count as an open. Links keep redirecting for a
+year after sending, also if you delete the message. A plain-text message gets
 an HTML part, since tracking needs one. System mail (auto-replies, unsubscribe requests) is not
 tracked, and neither are links in quoted or forwarded mail: those were written by someone else, and
 redirecting them through your address would let an outsider borrow it.
@@ -259,15 +265,20 @@ Keep in mind:
 ```js
 const BASE = 'https://mail.example.com/api/v1';
 const headers = { Authorization: `Bearer ${process.env.OPENINBOX_KEY}`, 'Content-Type': 'application/json' };
-let cursor = await loadCursor(); // e.g. from a file; start with `since=${Date.now()}`
+const api = async (path, init) => (await fetch(BASE + path, { headers, ...init })).json();
 
-const res = await fetch(`${BASE}/messages?direction=in&folder=inbox&cursor=${cursor}`, { headers });
-const { messages, nextCursor } = await res.json();
+// Run every minute or so. The cursor is kept between runs, e.g. in a file.
+let cursor = await loadCursor();
+const query = cursor ? `cursor=${cursor}` : `since=${Date.now()}`;
+const { messages, nextCursor } = await api(`/messages?direction=in&folder=inbox&${query}`);
+const { mailboxes } = await api('/mailboxes');
 for (const m of messages) {
-  await fetch(`${BASE}/messages`, {
+  // Reply from the mailbox's own address: the mail may have come to an alias, Cc or Bcc.
+  const from = mailboxes.find((b) => b.id === m.mailboxId).address;
+  await api('/messages', {
     method: 'POST',
     headers: { ...headers, 'Idempotency-Key': `ack-${m.id}` },
-    body: JSON.stringify({ from: m.to[0].address, to: [m.from], subject: `Re: ${m.subject}`, text: 'Thanks, we got your message.', inReplyTo: m.id }),
+    body: JSON.stringify({ from, to: [m.from], subject: `Re: ${m.subject}`, text: 'Thanks, we got your message.', inReplyTo: m.id }),
   });
 }
 await saveCursor(nextCursor);

@@ -1,8 +1,10 @@
 -- Open and click tracking for mail people send (web app and Inbox API).
 
+-- A row outlives its message (message_id becomes NULL), so links in mail already delivered keep
+-- redirecting after the sender deletes it. Such rows are removed a year after sending.
 CREATE TABLE tracked_messages (
-  message_id INTEGER PRIMARY KEY REFERENCES messages (id) ON DELETE CASCADE,
-  token TEXT NOT NULL UNIQUE,       -- random, in the pixel and link URLs
+  token TEXT PRIMARY KEY,           -- random, in the pixel and link URLs
+  message_id INTEGER UNIQUE REFERENCES messages (id) ON DELETE SET NULL,
   links TEXT NOT NULL DEFAULT '[]', -- JSON array of the original URLs, by index, set when sent
   sent_at INTEGER,                  -- when the tracked copy went out, to spot instant scanner hits
   events INTEGER NOT NULL DEFAULT 0 -- events recorded, up to a cap, so a hit never counts rows
