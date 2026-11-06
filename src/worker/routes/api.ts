@@ -19,6 +19,7 @@ import { normalizeAddress, type Address } from '../mail/address';
 import { applyThreadAction, getThread, listThreads, messageBody, searchThreads } from '../services/threads';
 import { attachmentBytes, cancelScheduled, deleteDraft, saveDraft, sendDraft } from '../services/send';
 import { r2Store } from '../storage';
+import { trackingEvents } from '../services/tracking';
 
 export const api = new Hono<AppBindings>();
 
@@ -196,6 +197,13 @@ api.get('/messages/:id', requireScope('read'), async (c) => {
   const html = detail.htmlDeferred ? (await messageBody(c.env.DB, m.messageId)).html : detail.html;
   const { htmlDeferred: _deferred, ...rest } = detail;
   return c.json({ ...rest, html, threadId: m.threadId, mailboxId: m.mailboxId });
+});
+
+// Opens and clicks of a sent message, newest first.
+api.get('/messages/:id/events', requireScope('read'), async (c) => {
+  const m = await assertMessage(c.env.DB, currentUser(c), intParam(c, 'id'));
+  assertKeyMailbox(c, m.mailboxId);
+  return c.json(await trackingEvents(c.env.DB, m.messageId));
 });
 
 api.get('/attachments/:id', requireScope('read'), async (c) => {
