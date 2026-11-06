@@ -9,6 +9,7 @@ export interface Limit {
 export const LOGIN_PER_IP: Limit = { max: 20, windowMs: 15 * 60_000 };
 export const LOGIN_PER_ACCOUNT: Limit = { max: 6, windowMs: 15 * 60_000 };
 export const KEY_CHECK_PER_IP: Limit = { max: 6, windowMs: 15 * 60_000 };
+export const API_PER_KEY: Limit = { max: 120, windowMs: 60_000 };
 
 export const clientIpKey = (scope: string, ip: string) => `${scope}:ip:${ip}`;
 export const accountKey = (scope: string, email: string) => `${scope}:user:${email.toLowerCase()}`;
@@ -42,4 +43,20 @@ export async function recordFailure(db: D1Database, key: string, limit: Limit): 
 
 export async function clearFailures(db: D1Database, key: string): Promise<void> {
   await db.prepare('DELETE FROM auth_attempts WHERE key = ?').bind(key).run();
+}
+
+// Counts one use and returns the count in the current window, in one write.
+export async function countUse(db: D1Database, key: string, limit: Limit): Promise<{ count: number; retryAfter: number }> {
+  const now = Date.now();
+  const row = await db
+    .prepare(
+      `INSERT INTO auth_attempts (key, count, window_start) VALUES (?, 1, ?)
+       ON CONFLICT (key) DO UPDATE SET
+         count = CASE WHEN ? - window_start >= ? THEN 1 ELSE count + 1 END,
+         window_start = CASE WHEN ? - window_start >= ? THEN ? ELSE window_start END
+       RETURNING count, window_start`,
+    )
+    .bind(key, now, now, limit.windowMs, now, limit.windowMs, now)
+    .first<Row>();
+  return { count: row?.count ?? 1, retryAfter: Math.max(1, Math.ceil(((row?.window_start ?? now) + limit.windowMs - now) / 1000)) };
 }
