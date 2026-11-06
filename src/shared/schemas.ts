@@ -180,6 +180,8 @@ export const destinationSchema = z.object({ email: z.string().trim().email().max
 export const trustedSenderSchema = z.object({ pattern: z.string().trim().min(3).max(254) });
 
 export const apiKeySchema = z.object({
+  // A key outlives sessions, so creating one asks for the password again.
+  password: z.string().min(1, 'Enter your password.').max(256),
   name: z.string().trim().min(1, 'Name the key, e.g. the app that uses it.').max(60),
   scopes: z.array(z.enum(API_SCOPES)).min(1, 'Choose at least one permission.').max(API_SCOPES.length),
   mailboxIds: z.array(id).max(100).nullable().default(null),

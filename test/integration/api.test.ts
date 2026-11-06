@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import worker from '../../src/worker/index';
 import { useFakeApis } from '../helpers/fake';
-import { Client, deliver, email, ORIGIN, setupInstance } from '../helpers/client';
+import { Client, deliver, email, ENCRYPTION_KEY, ORIGIN, setupInstance } from '../helpers/client';
 
 // Calls the Inbox API like a script would: an API key, no cookies, no CSRF token.
 async function call(key: string | null, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -26,7 +26,7 @@ describe('Inbox API', () => {
     await admin.post('/api/admin/providers', { type: 'resend', config: { apiKey: 're_test_key_123' } });
   });
 
-  const newKey = (scopes: string[], extra: Record<string, unknown> = {}) => admin.post('/api/account/api-keys', { name: 'script', scopes, ...extra });
+  const newKey = (scopes: string[], extra: Record<string, unknown> = {}) => admin.post('/api/account/api-keys', { password: 'correct horse battery', name: 'script', scopes, ...extra });
 
   it('sends, reads and polls mail with a key', async () => {
     const created = await newKey(['read', 'send']);
@@ -72,6 +72,14 @@ describe('Inbox API', () => {
     expect(again.status).toBe(200);
     expect(again.body).toMatchObject({ id: first.body.id, replayed: true });
     expect(fake.state.resend.emails).toHaveLength(1);
+  });
+
+  it('needs the password to create a key, and drops keys when the owner account is recovered', async () => {
+    expect(await admin.status('POST', '/api/account/api-keys', { password: 'wrong password!', name: 'x', scopes: ['read'] })).toBe(400);
+    const { key } = await newKey(['read']);
+    expect((await call(key, 'GET', '/api/v1/me')).status).toBe(200);
+    await admin.post('/api/auth/recover', { email: 'admin@example.com', setupKey: ENCRYPTION_KEY, newPassword: 'another long password' });
+    expect((await call(key, 'GET', '/api/v1/me')).status).toBe(401);
   });
 
   it('enforces scopes, mailbox limits and bad keys', async () => {

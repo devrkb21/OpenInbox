@@ -145,6 +145,8 @@ account.get('/api-keys', async (c) => {
 account.post('/api-keys', async (c) => {
   const user = currentUser(c);
   const input = await body(c, apiKeySchema);
+  const row = await first<UserRow>(c.env.DB, 'SELECT * FROM users WHERE id = ?', user.id);
+  if (!row || !(await verifyPassword(input.password, row.password_hash))) throw new HttpError(400, 'wrong_password', 'Your password is not correct.');
   const count = await first<{ n: number }>(c.env.DB, 'SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?', user.id);
   if ((count?.n ?? 0) >= MAX_API_KEYS) throw badRequest(`You can have at most ${MAX_API_KEYS} API keys. Delete one you no longer use.`);
   let mailboxIds: number[] | null = null;

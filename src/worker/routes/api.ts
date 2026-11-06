@@ -25,6 +25,8 @@ export const api = new Hono<AppBindings>();
 
 const MAX_ATTACHMENT = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS_TOTAL = 25 * 1024 * 1024;
+// type/subtype only: anything else is stored and served as application/octet-stream.
+const MIME_TYPE = /^[\w.+-]+\/[\w.+-]+$/;
 
 api.get('/me', (c) => {
   const user = currentUser(c);
@@ -220,7 +222,7 @@ api.get('/attachments/:id', requireScope('read'), async (c) => {
   if (!bytes) throw notFound('The attachment data is no longer available.');
   return new Response(bytes, {
     headers: {
-      'Content-Type': a.content_type || 'application/octet-stream',
+      'Content-Type': MIME_TYPE.test(a.content_type) ? a.content_type : 'application/octet-stream',
       'Content-Disposition': contentDisposition('attachment', a.filename || 'attachment'),
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'; sandbox",
@@ -268,7 +270,8 @@ api.post('/messages', requireScope('send'), async (c) => {
     for (const f of files) {
       const id = crypto.randomUUID();
       const filename = f.filename.replace(/[\r\n"\\/]/g, '_');
-      const contentType = f.contentType.split(';')[0].trim() || 'application/octet-stream';
+      const type = f.contentType.split(';')[0].trim().toLowerCase();
+      const contentType = MIME_TYPE.test(type) ? type : 'application/octet-stream';
       await store.put(`uploads/${id}`, f.bytes, contentType);
       await run(
         db,

@@ -7,7 +7,7 @@ import { useAction } from '../../lib/hooks';
 import type { Mailbox } from '../../lib/types';
 import { UPSTREAM_REPO } from '../../../shared/constants';
 import { Button } from '../../components/ui/button';
-import { Checkbox, Field, Input, Select } from '../../components/ui/form';
+import { Checkbox, Field, Input, PasswordInput, Select } from '../../components/ui/form';
 import { Alert, Badge, Card, CardHeader, CopyButton, EmptyState, PageHeader } from '../../components/ui/misc';
 import { ConfirmDialog, Dialog } from '../../components/ui/overlay';
 
@@ -113,6 +113,7 @@ function CreateKey({ mailboxes, onClose, onCreated }: { mailboxes: Mailbox[]; on
   const [scopes, setScopes] = useState<string[]>(['read', 'send']);
   const [limit, setLimit] = useState<number[] | null>(null);
   const [days, setDays] = useState('');
+  const [password, setPassword] = useState('');
   const [created, setCreated] = useState<string | null>(null);
   const { run, busy } = useAction();
   const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...list, v] : list.filter((x) => x !== v));
@@ -146,10 +147,10 @@ function CreateKey({ mailboxes, onClose, onCreated }: { mailboxes: Mailbox[]; on
         <Button
           variant="primary"
           loading={busy === 'create'}
-          disabled={!name.trim() || !scopes.length || (limit !== null && !limit.length)}
+          disabled={!name.trim() || !password || !scopes.length || (limit !== null && !limit.length)}
           onClick={() =>
             run('create', async () => {
-              const k = await post<{ key: string }>('/account/api-keys', { name, scopes, mailboxIds: limit, expiresInDays: days ? Number(days) : null });
+              const k = await post<{ key: string }>('/account/api-keys', { password, name, scopes, mailboxIds: limit, expiresInDays: days ? Number(days) : null });
               setCreated(k.key);
               onCreated();
             })
@@ -184,6 +185,9 @@ function CreateKey({ mailboxes, onClose, onCreated }: { mailboxes: Mailbox[]; on
             <option value="90">In 90 days</option>
             <option value="365">In a year</option>
           </Select>
+        </Field>
+        <Field label="Your password" hint="Keys keep working after you sign out, so creating one needs your password.">
+          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
         </Field>
         {scopes.includes('send') && <Alert tone="warning">Sending through the API counts against your providers' daily limits like any other mail. Send only to people who expect to hear from you.</Alert>}
       </div>

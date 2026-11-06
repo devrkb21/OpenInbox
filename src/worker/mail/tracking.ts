@@ -6,6 +6,8 @@
 // follow every link before the recipient sees the message. Each hit gets a source so the counts
 // can show likely people apart from machines.
 
+import { decodeEntities, escapeHtml } from './html';
+
 export type HitSource = 'human' | 'proxy' | 'apple' | 'scanner';
 
 export function pixelUrl(base: string, token: string): string {
@@ -16,19 +18,30 @@ export function linkUrl(base: string, token: string, index: number): string {
   return `${base}/api/t/${token}/${index}`;
 }
 
-// Adds the pixel and sends http(s) links through the redirect. Returns the original URLs by
-// index; the same URL twice shares an index.
+// An href as the URL a browser would follow (entities decoded, non-ASCII percent-encoded), or null
+// when it isn't a valid http(s) URL. The redirect sends this exact string as its Location.
+function webUrl(href: string): string | null {
+  try {
+    const u = new URL(decodeEntities(href).trim());
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// Adds the pixel and sends http(s) links through the redirect. Returns the links' URLs by index;
+// the same URL twice shares an index. Links that aren't valid URLs are left alone.
 export async function applyTracking(html: string, opts: { base: string; token: string }): Promise<{ html: string; links: string[] }> {
   const links: string[] = [];
-  const pixel = `<img src="${pixelUrl(opts.base, opts.token)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0">`;
+  const pixel = `<img src="${escapeHtml(pixelUrl(opts.base, opts.token))}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0">`;
   let placed = false;
   const rewriter = new HTMLRewriter()
     .on('a[href]', {
       element(el) {
-        const href = (el.getAttribute('href') ?? '').trim();
-        if (!/^https?:\/\//i.test(href)) return;
-        let i = links.indexOf(href);
-        if (i < 0) i = links.push(href) - 1;
+        const url = webUrl(el.getAttribute('href') ?? '');
+        if (!url) return;
+        let i = links.indexOf(url);
+        if (i < 0) i = links.push(url) - 1;
         el.setAttribute('href', linkUrl(opts.base, opts.token, i));
       },
     })

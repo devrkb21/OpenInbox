@@ -18,9 +18,12 @@ Create a key in **Settings → API keys**. A key acts as you, limited to what yo
 | `send` | Send and schedule messages, cancel scheduled ones |
 | `modify` | Mark read or unread, star, archive, move to spam or trash, snooze, label |
 
-You can also limit a key to some of your inboxes and give it an expiry date. The key is shown
-once; OpenInbox stores only a hash of it. Deleting the key, disabling its user or removing the
-user from a mailbox takes effect on the next request.
+You can also limit a key to some of your inboxes and give it an expiry date. Creating a key asks
+for your password, since a key keeps working after you sign out. The key is shown once;
+OpenInbox stores only a hash of it. Deleting the key, disabling its user or removing the user from
+a mailbox takes effect on the next request. When an admin resets your password, or the owner
+account is recovered with the recovery key, your keys are deleted, in case the account had been
+taken over. Changing your own password keeps them.
 
 ```sh
 curl https://mail.example.com/api/v1/me \

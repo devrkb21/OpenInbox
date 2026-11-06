@@ -136,12 +136,21 @@ describe('tracking', () => {
       '<html><body><p><a href="https://a.example/x?a=1&amp;b=2">A</a> <a href="mailto:x@y.test">mail</a> <a href="https://a.example/x?a=1&amp;b=2">again</a> <a href="http://b.example">B</a></p></body></html>',
       { base: 'https://mail.example.com', token: 'tok' },
     );
-    expect(links).toEqual(['https://a.example/x?a=1&amp;b=2', 'http://b.example']);
+    expect(links).toEqual(['https://a.example/x?a=1&b=2', 'http://b.example/']);
     expect(html).toContain('href="https://mail.example.com/api/t/tok/0">A</a>');
     expect(html).toContain('href="mailto:x@y.test"');
     expect(html).toContain('href="https://mail.example.com/api/t/tok/0">again</a>');
     expect(html).toContain('href="https://mail.example.com/api/t/tok/1"');
     expect(html).toMatch(/<img src="https:\/\/mail\.example\.com\/api\/t\/tok\.gif"[^>]*><\/body>/);
+  });
+
+  it('stores links as browsers follow them and skips invalid ones', async () => {
+    const { html, links } = await applyTracking('<a href="https://bücher.example/straße?q=ü ">A</a><a href="https://exa mple.com/">B</a><a href="https://x.test/&#13;&#10;Set-Cookie:a=b">C</a>', {
+      base: 'https://m.test',
+      token: 't',
+    });
+    expect(links).toEqual(['https://xn--bcher-kva.example/stra%C3%9Fe?q=%C3%BC', 'https://x.test/Set-Cookie:a=b']);
+    expect(html).toContain('href="https://exa mple.com/"');
   });
 
   it('appends the pixel to a fragment without a body', async () => {

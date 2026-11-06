@@ -6,7 +6,7 @@ import { all, first, placeholders } from '../db/db';
 import { randomToken } from '../lib/crypto';
 import { newId } from '../lib/ids';
 import { parseJson } from '../lib/json';
-import { decodeEntities, textToHtml } from '../mail/html';
+import { textToHtml } from '../mail/html';
 import { applyTracking, classifyHit, summarize, type EventCount, type HitSource, type TrackingSummary } from '../mail/tracking';
 
 // Per message, so a link hammered by a bot can't fill the database.
@@ -28,7 +28,7 @@ export async function trackedHtml(db: D1Database, settings: AppSettings, message
   const t = await first<TrackedRow>(db, 'SELECT * FROM tracked_messages WHERE message_id = ?', messageId);
   if (!t) return null;
   const { html, links } = await applyTracking(body.html || textToHtml(body.text), { base: settings.appUrl.replace(/\/$/, ''), token: t.token });
-  await db.prepare('UPDATE tracked_messages SET links = ?, sent_at = ? WHERE message_id = ?').bind(JSON.stringify(links.map(decodeEntities)), now, messageId).run();
+  await db.prepare('UPDATE tracked_messages SET links = ?, sent_at = ? WHERE message_id = ?').bind(JSON.stringify(links), now, messageId).run();
   return html;
 }
 
