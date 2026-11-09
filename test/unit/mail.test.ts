@@ -5,6 +5,7 @@ import { parseAddressList, stripPlusTag } from '../../src/worker/mail/address';
 import { htmlToText, makeSnippet } from '../../src/worker/mail/html';
 import { sanitizeSignature } from '../../src/worker/mail/signature';
 import { textToSafeHtml } from '../../src/web/lib/linkify';
+import { sentStatus } from '../../src/web/lib/mail';
 import { applyTracking, classifyHit } from '../../src/worker/mail/tracking';
 import { buildMime, encodeQuotedPrintable } from '../../src/worker/mail/mime';
 import { buildReferences, normalizeSubject, parseIdList } from '../../src/worker/mail/threading';
@@ -332,6 +333,19 @@ describe('tracking', () => {
     expect(classifyHit({ ...base, kind: 'click', userAgent: chrome, method: 'HEAD' })).toBe('scanner');
     expect(classifyHit({ ...base, kind: 'click', userAgent: chrome, msSinceSent: 2_000 })).toBe('scanner');
     expect(classifyHit({ ...base, kind: 'click', userAgent: chrome })).toBe('human');
+  });
+});
+
+describe('sent status', () => {
+  it('shows problems first, then the furthest step', () => {
+    expect(sentStatus('bounced', true)).toEqual({ label: 'Bounced', tone: 'danger' });
+    expect(sentStatus('complained', false)?.label).toBe('Marked as spam');
+    expect(sentStatus('failed', false)?.label).toBe('Not sent');
+    // An open means it arrived, even without a delivery report.
+    expect(sentStatus('sent', true)).toEqual({ label: 'Opened', tone: 'success' });
+    expect(sentStatus('delivered', false)).toEqual({ label: 'Delivered', tone: 'success' });
+    expect(sentStatus('sent', false)).toEqual({ label: 'Sent', tone: 'neutral' });
+    expect(sentStatus('draft', false)).toBeNull();
   });
 });
 
