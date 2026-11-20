@@ -1,6 +1,7 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 import { useSession } from './lib/session';
+import { syncPushSubscription } from './lib/push';
 import { errorText } from './lib/api';
 import { PageSpinner } from './components/ui/misc';
 import { Button } from './components/ui/button';
@@ -50,6 +51,7 @@ export function App() {
   const startPage = isAdmin && user.preferences?.startPage !== 'mail' ? '/admin' : '/mail';
   return (
     <Suspense fallback={<PageSpinner />}>
+      <PushSync />
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/mail/*" element={<MailPage />} />
@@ -61,4 +63,12 @@ export function App() {
       </Routes>
     </Suspense>
   );
+}
+
+// Once signed in: tells the server about this browser's push subscription if it changed.
+function PushSync() {
+  useEffect(() => {
+    syncPushSubscription().catch(() => undefined);
+  }, []);
+  return null;
 }
