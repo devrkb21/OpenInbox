@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { renderSVG } from 'uqr';
-import { Bell, Inbox, KeyRound, Laptop, LayoutGrid, Monitor, Moon, Shield, Sun, Trash } from 'lucide-react';import { del, get, patch, post, errorText } from '../../lib/api';
+import { Bell, Inbox, KeyRound, Laptop, LayoutGrid, Monitor, Moon, Shield, Sun, Trash } from 'lucide-react';
+import { del, get, patch, post, errorText } from '../../lib/api';
 import { timeAgo } from '../../lib/format';
 import { useAction } from '../../lib/hooks';
 import { useRefreshSession, useUser } from '../../lib/session';
