@@ -75,7 +75,7 @@ OpenInbox is built for everyday conversations. It is not a bulk or marketing sen
 - Send through Resend, Brevo, Mailjet, Cloudflare Email Sending or any SMTP server. When one provider hits its free limit, mail falls back to another.
 - Mail your other apps send through Resend (over its SMTP or API) counts toward its limit, and shows in Sent when it comes from an address with a mailbox.
 - Threads, All Mail, search (`from:` `has:attachment` `before:`), labels, filters, snooze, scheduled and undo send.
-- Forwarding: keep the mail here and forward a copy to Gmail or any other address. Cloudflare does the forwarding, so it doesn't use your sending quota.
+- Forwarding: keep the mail here and forward a copy to Gmail or any other address. Cloudflare does the forwarding, so it doesn't use your sending quota. Addresses already verified in Cloudflare show up, and Cloudflare forwarding rules for single addresses (which bypass OpenInbox) can be turned off or moved in, keeping their forward.
 - Command palette and keyboard shortcuts, dark mode, mobile layout.
 - [Inbox API](API.md): per-user API keys to read, search, organize and send mail from scripts and apps.
 - Optional open and click tracking of all sent mail (one switch in Admin → Settings), with Apple Mail prefetches and link scanners counted apart from people.
