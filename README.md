@@ -10,7 +10,7 @@
 Unlimited users, mailboxes, aliases and domains, hosted entirely in your own free Cloudflare account.<br>
 No per-seat fees, no servers to run, no vendor holding your mail.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sums001/OpenInbox)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/devrkb21/OpenInbox/tree/deploy)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](LICENSE)
 ![Runs on Cloudflare Workers](https://img.shields.io/badge/runs%20on-Cloudflare%20Workers-f38020?logo=cloudflare&logoColor=white)
