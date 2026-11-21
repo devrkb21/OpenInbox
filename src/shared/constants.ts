@@ -31,9 +31,12 @@ export const DEFAULT_SETTINGS = {
   remoteImages: 'block' as RemoteImagesPolicy,
   tracking: 'off' as TrackingPolicy,
   senderLogos: 'off' as SenderLogosPolicy,
+  autoDomains: 'on' as AutoDomainsPolicy,
 };
 
 export type SpamPolicy = 'spam' | 'reject' | 'off';
+// 'on': every zone the Cloudflare token can reach, in any account, is added and set up by itself.
+export type AutoDomainsPolicy = 'on' | 'off';
 export type RemoteImagesPolicy = 'block' | 'allow';
 // Open and click tracking of all mail people send, for the whole instance.
 export type TrackingPolicy = 'off' | 'on';
