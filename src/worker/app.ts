@@ -1,6 +1,6 @@
 // The Hono API. Static assets (the web app) are served by Cloudflare before the Worker runs;
 // wrangler.jsonc sends only /api/* here (run_worker_first).
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import type { AppBindings } from './types';
 import type { Env } from './env';
 import { errorMessage, HttpError } from './lib/errors';
@@ -19,6 +19,7 @@ import { mail } from './routes/mail';
 import { compose } from './routes/compose';
 import { admin } from './routes/admin';
 import { webhooks } from './routes/webhooks';
+import { devices } from './routes/devices';
 import { api } from './routes/api';
 import { tracking } from './routes/tracking';
 import { apiKeyAuth } from './auth/api-key';
@@ -57,6 +58,26 @@ app.use('*', async (c, next) => {
   c.header('X-Frame-Options', 'DENY');
   if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
 });
+
+// The Inbox API authenticates with a key in the Authorization header, never with cookies, so
+// apps running in a browser, on any site, may call it (like GitHub's API): the browser adds no
+// credential to these requests. /health lets such an app check an address is OpenInbox.
+const API_CORS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, Idempotency-Key',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Expose-Headers': 'Retry-After',
+  'Access-Control-Max-Age': '86400',
+};
+const apiCors: MiddlewareHandler<AppBindings> = async (c, next) => {
+  for (const [k, v] of Object.entries(API_CORS)) c.header(k, v);
+  if (c.req.method === 'OPTIONS') return c.body(null, 204);
+  await next();
+};
+app.use('/v1/*', apiCors);
+app.use('/health', apiCors);
+app.use('/devices/pair', apiCors);
+app.use('/devices/pair/*', apiCors);
 
 app.get('/health', (c) => c.json({ ok: true, version: __APP_VERSION__ }));
 
@@ -99,6 +120,7 @@ app.route('/auth', auth);
 app.route('/webhooks', webhooks);
 app.route('/relay', relay);
 app.route('/t', tracking);
+app.route('/devices', devices);
 app.route('/bimi', bimi);
 
 app.use('/v1/*', apiKeyAuth);

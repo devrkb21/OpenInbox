@@ -22,6 +22,7 @@ import {
   subscribeToPush,
   unsubscribeFromPush,
 } from '../../lib/push';
+import { Phones } from '../../components/Phones';
 
 // Each section is its own page in the settings sidebar.
 export function ProfileSettings() {
@@ -56,7 +57,8 @@ export function SecuritySettings() {
 export function DevicesSettings() {
   return (
     <div className="space-y-6">
-      <PageHeader title="Devices" description="Browsers signed in to your account. Sign out any you don't recognize." />
+      <PageHeader title="Devices" description="Phones and browsers connected to your account. Remove any you don't recognize." />
+      <Phones />
       <Sessions />
     </div>
   );
