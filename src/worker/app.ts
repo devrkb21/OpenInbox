@@ -22,6 +22,7 @@ import { webhooks } from './routes/webhooks';
 import { api } from './routes/api';
 import { tracking } from './routes/tracking';
 import { apiKeyAuth } from './auth/api-key';
+import { relay } from './routes/relay';
 import { bimi } from './routes/bimi';
 
 export const app = new Hono<AppBindings>().basePath('/api');
@@ -78,7 +79,7 @@ app.use('*', async (c, next) => {
   c.set('settings', await loadSettings(c.env.DB));
   const path = c.req.path;
   c.set('apiKey', null);
-  if (path.startsWith('/api/webhooks/') || path.startsWith('/api/t/') || path.startsWith('/api/bimi/')) return next();
+  if (path.startsWith('/api/webhooks/') || path.startsWith('/api/relay/') || path.startsWith('/api/t/') || path.startsWith('/api/bimi/')) return next();
   // The Inbox API never reads the session cookie; apiKeyAuth sets the user from the key.
   if (path.startsWith('/api/v1/')) {
     if (!(await isSetupComplete(c.env.DB))) throw new HttpError(409, 'setup_required', 'Finish setup first.');
@@ -96,6 +97,7 @@ app.use('*', async (c, next) => {
 app.route('/setup', setup);
 app.route('/auth', auth);
 app.route('/webhooks', webhooks);
+app.route('/relay', relay);
 app.route('/t', tracking);
 app.route('/bimi', bimi);
 

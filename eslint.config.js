@@ -24,7 +24,7 @@ export default defineConfig(
     },
   },
   {
-    files: ['src/web/public/sw.js'],
+    files: ['src/web/public/sw.js', 'src/worker/cloudflare/relay-worker.js'],
     languageOptions: { globals: globals.serviceworker },
   },
   {
